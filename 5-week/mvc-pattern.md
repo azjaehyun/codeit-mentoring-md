@@ -1,14 +1,5 @@
 
 
-아래 내용을 그대로 복사하여 `spring-mvc-review.md` 파일로 저장하시면 됩니다.
-
----
-
-```markdown
-# 🌿 Spring MVC 핵심 리뷰 노트
-
----
-
 ## 1. Spring MVC 전체 아키텍처 (Request Lifecycle)
 
 > Spring MVC의 모든 것은 **DispatcherServlet**에서 시작된다.
