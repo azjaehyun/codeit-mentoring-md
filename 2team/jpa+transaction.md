@@ -551,6 +551,181 @@ teamRepository.findAll(PageRequest.of(0, 10));
 
 이거 뜨면 **DB에서 다 가져와서 메모리에서 잘라냅니다.** 데이터가 100만 건이면 OOM 터져요.
 
+**좀더자세히**:
+좋은 질문이에요! 이 부분이 JPA에서 가장 헷갈리는 함정 중 하나예요. 차근차근 풀어볼게요.
+
+## 핵심 한 줄
+
+> **"1:N 관계를 JOIN하면 행이 뻥튀기되는데, 페이징은 '행 단위'로 자르기 때문에 우리가 원하는 결과가 안 나와요."**
+
+## 1. 먼저 1:N JOIN을 하면 결과가 어떻게 나오는지 봐요
+
+팀과 멤버가 이렇게 있다고 해봅시다.
+
+```
+팀 테이블 (team)              멤버 테이블 (member)
+| id | name |                | id | name   | team_id |
+|----|------|                |----|--------|---------|
+| 1  | A팀  |                | 1  | 김철수 | 1       |
+| 2  | B팀  |                | 2  | 이영희 | 1       |
+| 3  | C팀  |                | 3  | 박민수 | 1       |
+                             | 4  | 최지훈 | 2       |
+                             | 5  | 정수진 | 2       |
+                             | 6  | 강민호 | 3       |
+```
+
+여기서 `@EntityGraph(attributePaths = {"members"})`는 내부적으로 이런 SQL을 만들어요.
+
+```sql
+SELECT t.id, t.name, m.id, m.name, m.team_id
+FROM team t
+LEFT JOIN member t.members m ON m.team_id = t.id;
+```
+
+**SQL이 실제로 반환하는 행(row):**
+
+```
+| t.id | t.name | m.id | m.name |
+|------|--------|------|--------|
+| 1    | A팀    | 1    | 김철수 |  ← A팀이 1번째
+| 1    | A팀    | 2    | 이영희 |  ← A팀이 또!
+| 1    | A팀    | 3    | 박민수 |  ← A팀이 또또!
+| 2    | B팀    | 4    | 최지훈 |
+| 2    | B팀    | 5    | 정수진 |
+| 3    | C팀    | 6    | 강민호 |
+```
+
+**총 6행이에요.** 팀은 3개인데 행은 6개죠. 멤버 수만큼 팀이 중복돼서 나와요. 이게 **"뻥튀기"** 입니다.
+
+JPA는 이 결과를 보고 **"아 같은 t.id가 여러 번 나오네, 묶어줘야지"** 하면서 최종적으로 팀 3개로 만들어 우리에게 돌려줘요.
+
+## 2. 이제 페이징이 뭐 하는 건지 봐요
+
+`Page<Team> findAll(PageRequest.of(0, 10))`은 **"10개씩 잘라줘"** 라는 뜻이에요. 그런데 DB는 **객체가 뭔지 몰라요. DB는 행(row) 단위로만 잘라요.**
+
+만약 DB에서 진짜로 `LIMIT 10`을 걸어버리면?
+
+```sql
+SELECT t.id, t.name, m.id, m.name
+FROM team t
+LEFT JOIN member m ON m.team_id = t.id
+LIMIT 10;  -- 만약 이렇게 자르면?
+```
+
+A팀에 멤버가 12명 있다고 해봐요. LIMIT 10을 걸면 **A팀 멤버 10명만** 잘려서 나와요. 그럼 결과는 "A팀 + 멤버 10명"이 끝이에요. **B팀, C팀은 아예 사라져요.** 우리가 원한 건 "팀 10개"였는데, 멤버만 10명 가져온 셈이죠.
+
+그래서 Hibernate는 이런 상황에서 **"이렇게 자르면 잘못된 결과 나오니까, 차라리 다 가져와서 메모리에서 자르겠다"** 라고 판단해요.
+
+## 3. 실제로 어떻게 동작하는지
+
+```mermaid
+sequenceDiagram
+    participant App as 내 코드
+    participant JPA
+    participant DB
+
+    App->>JPA: 팀 10개씩 페이징해줘
+    Note over JPA: 1:N JOIN이라 LIMIT 못 씀
+    JPA->>DB: SELECT 전체 다 줘 (LIMIT 없음!)
+    DB-->>JPA: 100만 행 다 보냄 💥
+    Note over JPA: 메모리에서 중복 제거 후<br/>10개만 잘라냄
+    JPA-->>App: 팀 10개 반환
+```
+
+콘솔에 이런 경고가 떠요:
+
+```
+WARN: HHH000104: firstResult/maxResults specified with collection fetch;
+applying in memory!
+```
+
+해석하면 **"1:N 같이 가져오는데 페이징을 걸었네? 어쩔 수 없이 메모리에서 처리한다"** 라는 뜻이에요.
+
+## 4. 왜 "위험"한가?
+
+```
+팀 100만 개 + 팀당 멤버 평균 5명 → 총 500만 행
+```
+
+이 500만 행을 **모두 DB에서 가져와서 → JVM 메모리에 올리고 → 거기서 10개만 잘라서** 돌려줍니다. 나머지 499만 9990개의 팀은 그냥 메모리 점유하다가 GC됩니다.
+
+```mermaid
+flowchart LR
+    A[DB 500만 행] -->|"네트워크로 다 전송"| B[JVM 메모리]
+    B -->|"메모리에서 자르기"| C[10개 반환]
+    B -.-> D["💥 OutOfMemoryError<br/>또는 응답 지연"]
+    style D fill:#fdd
+```
+
+문제 세 가지가 동시에 터집니다. **첫째**, 네트워크 트래픽 폭발 (500만 행을 다 전송). **둘째**, JVM 메모리 폭발 (다 객체로 만들어 올림). **셋째**, 응답 시간 폭발 (몇 초~몇 분).
+
+학습용 테스트 환경(데이터 100건)에서는 **잘 동작해요**. 그래서 더 위험합니다. 운영에 올라가서 데이터가 쌓이는 어느 날, 갑자기 서버가 죽어요.
+
+## 5. 그럼 단일 연관(N:1)은 왜 괜찮은가?
+
+```java
+@EntityGraph(attributePaths = {"member"})  // 주문 → 회원 (N:1)
+Page<Order> findAll(Pageable pageable);
+```
+
+이건 안전해요. 왜냐면 N:1은 **행이 뻥튀기 안 되거든요.**
+
+```
+주문 1건 → 회원 1명 → JOIN 결과도 1행
+주문 10건 → 회원 10명(중복 가능) → JOIN 결과도 10행
+```
+
+행 수가 그대로니까 DB에서 그냥 `LIMIT 10` 걸어도 우리가 원하는 결과가 나와요.
+
+**규칙**: `@EntityGraph` + 페이징은 **단일 연관(`@ManyToOne`, `@OneToOne`)에서만 안전**, **컬렉션 연관(`@OneToMany`, `@ManyToMany`)에서는 위험**.
+
+## 6. 그럼 어떻게 해결하나요?
+
+`default_batch_fetch_size`를 활용해서 **2단계로 분리**해요.
+
+```java
+public interface TeamRepository extends JpaRepository<Team, Long> {
+    Page<Team> findAll(Pageable pageable);  // @EntityGraph 빼기!
+}
+```
+
+```yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        default_batch_fetch_size: 100
+```
+
+```java
+@Transactional(readOnly = true)
+public void run() {
+    Page<Team> teams = teamRepository.findAll(PageRequest.of(0, 10));
+    teams.forEach(t -> t.getMembers().size());  // 멤버 접근
+}
+```
+
+이러면 SQL이 이렇게 나가요.
+
+```sql
+-- 1단계: 팀만 페이징 (정확하게 10개)
+SELECT * FROM team LIMIT 10;
+
+-- 2단계: 10개 팀의 멤버를 IN 절로 한 방에
+SELECT * FROM member WHERE team_id IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+```
+
+**총 SQL 2번**으로 끝. 페이징은 정확하고, N+1도 없고, 메모리 폭발도 없어요. 이게 실무에서 1:N + 페이징의 정석 패턴입니다.
+
+---
+
+## 정리
+
+요약하면 이렇습니다. **첫째**, 1:N JOIN은 행이 뻥튀기된다. **둘째**, DB는 행 단위로만 자를 수 있어서 페이징과 궁합이 안 맞는다. **셋째**, Hibernate가 어쩔 수 없이 전체를 메모리로 끌어와 자르는데, 데이터가 많으면 OOM 위험이 생긴다. **넷째**, 그래서 1:N은 `@EntityGraph` 대신 `default_batch_fetch_size`로 2단계 조회한다.
+
+**한 줄 기억법**: *"1:N + 페이징 = 메모리 폭탄, 단일 연관 + 페이징 = 안전"* 🎯
+
+
 **해결책**: `default_batch_fetch_size` 설정으로 해결!
 
 ```yaml
