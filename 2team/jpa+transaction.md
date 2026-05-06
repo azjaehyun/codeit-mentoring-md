@@ -507,10 +507,11 @@ LEFT OUTER JOIN team t ON m.team_id = t.id;
 ```mermaid
 flowchart TB
     Q[연관 객체 가져와야 함] --> Choice{어떻게?}
-    Choice -->|@EntityGraph 사용| Good["✅ 한 번에 끝<br/>SQL 1번"]
-    Choice -->|메서드 이름 쿼리만| Bad1["❌ 효과 없음<br/>N+1 발생"]
-    Choice -->|아무것도 안 함| Bad2["❌ N+1 발생"]
+    Choice -->|"@EntityGraph"| Good["✅ SQL 1번"]
+    Choice -->|"일반 메서드"| Bad1["❌ N+1"]
+    Choice -->|"미설정"| Bad2["❌ N+1"]
 ```
+
 
 > 💡 **단 한 줄로 외우기**: **"진짜로 같이 가져오려면 반드시 `@EntityGraph`!"** 그냥 메서드 이름 쿼리는 조건만 걸 뿐이에요.
 
