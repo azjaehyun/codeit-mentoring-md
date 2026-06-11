@@ -1,3 +1,4 @@
+
 신입사원분들이 AWS 클라우드 인프라의 기초부터 트래픽의 흐름, 컨테이너 서비스까지 한 번에 이해할 수 있도록 **모든 내용을 통합한 완성본 교육 자료**입니다. 
 
 '회사 사옥을 짓고 운영하는 과정'에 빗대어 아주 쉽게, 그리고 '왜 필요한지'에 집중하여 작성했습니다. 🏢✨
@@ -48,14 +49,14 @@ NAT Gateway의 역할은 인터넷이 차단된 Private 서버들을 대신해 �
 
 ```mermaid
 graph LR
-    User((🌐 사용자)) -- "1. 도메인 입력" --> DNS[📖 네임서버<br>(Route 53)]
+    User((🌐 사용자)) -- "1. 도메인 입력" --> DNS["📖 네임서버<br/>(Route 53)"]
     DNS -. "2. Public IP 반환" .-> User
     
-    subgraph AWS_VPC [우리 회사 사옥]
+    subgraph AWS_VPC ["우리 회사 사옥"]
         direction LR
-        IGW[🚪 IGW<br>(사옥 정문)]
-        ALB[⚖️ ALB<br>(안내 데스크)]
-        WAS[⚙️ Private 서버<br>(보안 사무실)]
+        IGW["🚪 IGW<br/>(사옥 정문)"]
+        ALB["⚖️ ALB<br/>(안내 데스크)"]
+        WAS["⚙️ Private 서버<br/>(보안 사무실)"]
         
         IGW == "4. 트래픽 진입" ==> ALB
         ALB == "5. 분산/전달" ==> WAS
@@ -69,11 +70,11 @@ graph LR
 
 ```mermaid
 graph LR
-    subgraph AWS_VPC [우리 회사 사옥]
+    subgraph AWS_VPC ["우리 회사 사옥"]
         direction LR
-        WAS[⚙️ Private 서버<br>(보안 사무실)]
-        NAT[📦 NAT Gateway<br>(Public Subnet)]
-        IGW[🚪 IGW<br>(사옥 정문)]
+        WAS["⚙️ Private 서버<br/>(보안 사무실)"]
+        NAT["📦 NAT Gateway<br/>(Public Subnet)"]
+        IGW["🚪 IGW<br/>(사옥 정문)"]
         
         WAS == "1. 요청 (사설IP)" ==> NAT
         NAT == "2. 주소 세탁 (공인IP)" ==> IGW
@@ -98,22 +99,22 @@ graph TD
     User((🌐 사용자)) --> IGW[🚪 Internet Gateway]
     IGW --> ALB[⚖️ ALB 로드밸런서]
 
-    subgraph AWS_VPC [☁️ AWS VPC (가상 클라우드 공간)]
+    subgraph AWS_VPC ["☁️ AWS VPC (가상 클라우드 공간)"]
         direction TB
         ALB
 
-        subgraph Public [🟢 Public Subnet / 인터넷 연결 O]
+        subgraph Public ["🟢 Public Subnet / 인터넷 연결 O"]
             WEB1[💻 Web Server 1]
             WEB2[💻 Web Server 2]
             NAT[📦 NAT Gateway]
         end
 
-        subgraph Private_App [🟡 Private Subnet / 인터넷 차단]
+        subgraph Private_App ["🟡 Private Subnet / 인터넷 차단"]
             WAS1[⚙️ WAS Server 1]
             WAS2[⚙️ WAS Server 2]
         end
 
-        subgraph Private_DB [🔴 Private Subnet / 최고 보안]
+        subgraph Private_DB ["🔴 Private Subnet / 최고 보안"]
             DB[(🗄️ Database)]
         end
     end
@@ -124,8 +125,8 @@ graph TD
     WAS1 & WAS2 ==>|3. 데이터 조회/저장| DB
     
     %% NAT 게이트웨이를 통한 외부 인터넷 통신 (아웃바운드)
-    WAS1 & WAS2 -. 4. 외부 업데이트 요청 .-> NAT
-    NAT -. 5. 공인 IP로 변환하여 외부로 .-> IGW
+    WAS1 & WAS2 -. "4. 외부 업데이트 요청" .-> NAT
+    NAT -. "5. 공인 IP로 변환하여 외부로" .-> IGW
 ```
 
 **💡 왜 3-Tier로 나누나요?**
@@ -162,5 +163,4 @@ graph TD
 **📌 신입사원 실무 적용 요약:**
 - "우리는 인프라 관리할 사람 없어요! 빠른 런칭이 목표예요!" 👉 **Fargate 추천!**
 - "우리는 대규모 서비스고, 서버 세팅을 세밀하게 튜닝해야 해요!" 👉 **ECS on EC2 추천!**
-
 
