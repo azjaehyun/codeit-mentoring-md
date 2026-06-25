@@ -108,6 +108,181 @@ flowchart TB
 }
 ```
 
+
+Spring Boot 환경 변수까지 추가하고, 각 항목에 주석을 모두 달아드리겠습니다.
+
+> ⚠️ **먼저 알아둘 점:** 표준 JSON은 주석(`//`)을 지원하지 않습니다. 그래서 ECS에 실제로 등록할 때는 주석을 빼야 합니다. 아래는 **학습용 주석 버전(JSONC)**과 **실제 배포용(순수 JSON)** 두 가지로 드립니다.
+
+---
+
+## 1. 학습용 — 주석 달린 버전 (JSONC)
+
+```jsonc
+{
+  // ── 태스크 정의의 논리적 이름. 같은 family로 등록할 때마다 revision(1,2,3...) 증가
+  "family": "my-web-app",
+
+  // ── Fargate 호환성 검증. 잘못된 옵션이 있으면 등록 단계에서 에러로 알려줌
+  "requiresCompatibilities": ["FARGATE"],
+
+  // ── Fargate는 반드시 awsvpc (task마다 ENI + 고유 사설 IP 할당)
+  "networkMode": "awsvpc",
+
+  // ── task 전체 CPU. 1024 = 1 vCPU (Fargate는 정해진 조합만 가능)
+  "cpu": "1024",
+
+  // ── task 전체 메모리. 2048 MiB = 2GB (cpu 1024와 짝이 맞아야 함)
+  "memory": "2048",
+
+  // ── 에이전트용 역할: ECR 이미지 pull, 로그 전송, Secrets 조회에 사용
+  "executionRoleArn": "arn:aws:iam::111122223333:role/ecsTaskExecutionRole",
+
+  // ── 앱 코드용 역할: 컨테이너 안 Spring Boot가 S3/DynamoDB 등 호출할 때 사용
+  "taskRoleArn": "arn:aws:iam::111122223333:role/myAppTaskRole",
+
+  "containerDefinitions": [
+    {
+      // ── 컨테이너 이름. GitHub Actions의 container-name, ALB 연결 시 이 이름을 참조
+      "name": "web",
+
+      // ── ECR 이미지 주소. 태그는 latest 대신 버전/commit SHA 권장(롤백 용이)
+      "image": "111122223333.dkr.ecr.ap-northeast-2.amazonaws.com/my-web-app:1.0.0",
+
+      // ── true: 이 컨테이너가 죽으면 task 전체 중단 (메인 앱은 보통 true)
+      "essential": true,
+
+      // ── awsvpc에서는 containerPort만 의미 있음. Spring Boot 기본 8080
+      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+
+      // ── 평문 환경변수: 민감하지 않은 설정값만 (비밀번호 X → secrets 사용)
+      "environment": [
+        // 활성 프로파일. application-prod.yml을 읽게 됨
+        { "name": "SPRING_PROFILES_ACTIVE", "value": "prod" },
+
+        // 서버 포트(application.yml의 server.port와 일치). portMappings와 맞춤
+        { "name": "SERVER_PORT", "value": "8080" },
+
+        // JVM 옵션. Fargate 메모리(2GB)에 맞춰 힙 설정 + 컨테이너 인식 옵션
+        { "name": "JAVA_OPTS", "value": "-XX:MaxRAMPercentage=75.0 -Duser.timezone=Asia/Seoul" },
+
+        // DB 접속 정보 중 민감하지 않은 부분(호스트/포트/스키마)은 평문 OK
+        { "name": "SPRING_DATASOURCE_URL", "value": "jdbc:postgresql://mydb.xxxx.ap-northeast-2.rds.amazonaws.com:5432/appdb" },
+        { "name": "SPRING_DATASOURCE_USERNAME", "value": "appuser" },
+
+        // 로그 레벨, 기타 앱 설정
+        { "name": "LOGGING_LEVEL_ROOT", "value": "INFO" }
+      ],
+
+      // ── 민감 정보: Secrets Manager / SSM에서 안전하게 주입 (로그/콘솔에 노출 안 됨)
+      //    ⚠️ 이 기능을 쓰려면 executionRole에 secretsmanager:GetSecretValue 권한 필요
+      "secrets": [
+        // DB 비밀번호 → Secrets Manager의 특정 키(:password::)를 주입
+        {
+          "name": "SPRING_DATASOURCE_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:ap-northeast-2:111122223333:secret:prod/db-AbCdEf:password::"
+        },
+        // JWT 시크릿 → SSM Parameter Store(SecureString)에서 주입
+        {
+          "name": "APP_JWT_SECRET",
+          "valueFrom": "arn:aws:ssm:ap-northeast-2:111122223333:parameter/my-web-app/jwt-secret"
+        }
+      ],
+
+      // ── 컨테이너 자체 헬스체크 (ALB 헬스체크와는 별개! 둘 다 통과해야 안정적)
+      "healthCheck": {
+        // Spring Boot Actuator의 health 엔드포인트 호출. 실패 시 exit 1
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"],
+        "interval": 30,    // 30초마다 검사
+        "timeout": 5,      // 5초 안에 응답 없으면 실패
+        "retries": 3,      // 3번 연속 실패하면 unhealthy
+        "startPeriod": 60  // 부팅 유예 60초(이 동안 실패는 카운트 안 함). 느리면 늘리기
+      },
+
+      // ── 로그를 CloudWatch Logs로 전송 (awslogs 드라이버)
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/my-web-app",        // 로그 그룹 이름
+          "awslogs-region": "ap-northeast-2",         // 로그를 보낼 리전
+          "awslogs-stream-prefix": "web",             // 스트림 이름 앞에 붙는 접두어
+          "awslogs-create-group": "true"              // 그룹 없으면 자동 생성
+          // ⚠️ create-group 쓰려면 executionRole에 logs:CreateLogGroup 권한 필요
+        }
+      }
+    }
+  ]
+}
+```
+
+---
+
+## 2. 실제 배포용 — 순수 JSON (그대로 등록 가능)
+
+```json
+{
+  "family": "my-web-app",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::111122223333:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::111122223333:role/myAppTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "web",
+      "image": "111122223333.dkr.ecr.ap-northeast-2.amazonaws.com/my-web-app:1.0.0",
+      "essential": true,
+      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+      "environment": [
+        { "name": "SPRING_PROFILES_ACTIVE", "value": "prod" },
+        { "name": "SERVER_PORT", "value": "8080" },
+        { "name": "JAVA_OPTS", "value": "-XX:MaxRAMPercentage=75.0 -Duser.timezone=Asia/Seoul" },
+        { "name": "SPRING_DATASOURCE_URL", "value": "jdbc:postgresql://mydb.xxxx.ap-northeast-2.rds.amazonaws.com:5432/appdb" },
+        { "name": "SPRING_DATASOURCE_USERNAME", "value": "appuser" },
+        { "name": "LOGGING_LEVEL_ROOT", "value": "INFO" }
+      ],
+      "secrets": [
+        {
+          "name": "SPRING_DATASOURCE_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:ap-northeast-2:111122223333:secret:prod/db-AbCdEf:password::"
+        },
+        {
+          "name": "APP_JWT_SECRET",
+          "valueFrom": "arn:aws:ssm:ap-northeast-2:111122223333:parameter/my-web-app/jwt-secret"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/my-web-app",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "web",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
+```
+
+---
+
+## 꼭 알아야 할 포인트 3가지
+
+**environment vs secrets** — Spring Boot는 환경 변수를 `application.yml`보다 우선으로 읽습니다. 예를 들어 `SPRING_DATASOURCE_PASSWORD` 환경 변수는 자동으로 `spring.datasource.password` 설정에 매핑됩니다(점/대문자 ↔ 언더스코어 변환, Relaxed Binding). **비밀번호·토큰 같은 민감 정보는 절대 `environment`에 평문으로 넣지 말고 `secrets`로** 넣으세요. `secrets`로 넣으면 콘솔이나 로그에 값이 노출되지 않습니다.
+
+**curl 이 컨테이너에 있어야 함** — 헬스체크 명령에 `curl`을 쓰는데, 슬림한 베이스 이미지(예: `eclipse-temurin:21-jre-alpine`)에는 curl이 없을 수 있습니다. 그럴 땐 Dockerfile에 `RUN apk add --no-cache curl`을 넣거나, curl 대신 다른 방법을 써야 합니다.
+
+**권한 연결** — `secrets`를 쓰면 **executionRole**에 `secretsmanager:GetSecretValue`와 `ssm:GetParameters`(+ 커스텀 KMS 키면 `kms:Decrypt`) 권한이 있어야 하고, `awslogs-create-group: "true"`를 쓰면 `logs:CreateLogGroup` 권한이 필요합니다. 이 권한들이 없으면 task가 PROVISIONING에서 멈추거나 STOPPED로 떨어집니다.
+
+
 ---
 
 ## 2. 두 가지 역할(Role)의 차이 🔑
